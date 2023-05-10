@@ -49,19 +49,11 @@ public class KeyedChatHandler implements
   }
 
   public static void invalidCancel(Logger logger, ConnectedPlayer player) {
-    logger.fatal("A plugin tried to cancel a signed chat message."
-        + " This is no longer possible in 1.19.1 and newer. "
-        + "Disconnecting player " + player.getUsername());
-    player.disconnect(Component.text("A proxy plugin caused an illegal protocol state. "
-        + "Contact your network administrator."));
+    //TODO: FIX
   }
 
   public static void invalidChange(Logger logger, ConnectedPlayer player) {
-    logger.fatal("A plugin tried to change a signed chat message. "
-        + "This is no longer possible in 1.19.1 and newer. "
-        + "Disconnecting player " + player.getUsername());
-    player.disconnect(Component.text("A proxy plugin caused an illegal protocol state. "
-        + "Contact your network administrator."));
+    //TODO: FIX
   }
 
   @Override

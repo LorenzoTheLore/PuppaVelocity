@@ -7,7 +7,6 @@ netty = "4.1.90.Final"
 [plugins]
 indra-publishing = "net.kyori.indra.publishing:2.0.6"
 shadow = "com.github.johnrengelman.shadow:8.1.0"
-spotless = "com.diffplug.spotless:6.12.0"
 
 [libraries]
 adventure-bom = "net.kyori:adventure-bom:4.13.1"

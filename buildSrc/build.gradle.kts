@@ -2,11 +2,9 @@ plugins {
     `kotlin-dsl`
     checkstyle
     alias(libs.plugins.indra.publishing)
-    alias(libs.plugins.spotless)
 }
 
 dependencies {
-    implementation("com.diffplug.spotless:spotless-plugin-gradle:${libs.plugins.spotless.get().version}")
 }
 
 gradlePlugin {
@@ -19,19 +17,9 @@ gradlePlugin {
             id = "velocity-checkstyle"
             implementationClass = "com.velocitypowered.script.VelocityCheckstylePlugin"
         }
-        register("velocity-spotless") {
-            id = "velocity-spotless"
-            implementationClass = "com.velocitypowered.script.VelocitySpotlessPlugin"
-        }
         register("velocity-publish") {
             id = "velocity-publish"
             implementationClass = "com.velocitypowered.script.VelocityPublishPlugin"
         }
-    }
-}
-
-spotless {
-    kotlin {
-        licenseHeaderFile(project.rootProject.file("../HEADER.txt"))
     }
 }
