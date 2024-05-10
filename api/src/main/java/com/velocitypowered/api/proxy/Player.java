@@ -13,24 +13,29 @@ import com.velocitypowered.api.proxy.crypto.KeyIdentifiable;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
 import com.velocitypowered.api.proxy.messages.ChannelMessageSink;
 import com.velocitypowered.api.proxy.messages.ChannelMessageSource;
+import com.velocitypowered.api.proxy.messages.PluginMessageEncoder;
 import com.velocitypowered.api.proxy.player.PlayerSettings;
 import com.velocitypowered.api.proxy.player.ResourcePackInfo;
 import com.velocitypowered.api.proxy.player.TabList;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.util.GameProfile;
 import com.velocitypowered.api.util.ModInfo;
+import java.net.InetSocketAddress;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
 import net.kyori.adventure.identity.Identified;
+import net.kyori.adventure.inventory.Book;
 import net.kyori.adventure.key.Key;
 import net.kyori.adventure.key.Keyed;
+import net.kyori.adventure.sound.Sound;
+import net.kyori.adventure.sound.SoundStop;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.event.HoverEventSource;
-import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.NotNull;
 
@@ -148,10 +153,17 @@ public interface Player extends
   /**
    * Clears the tab list header and footer for the player.
    *
-   * @deprecated Use {@link TabList#clearHeaderAndFooter()}.
+   * @deprecated Use {@link Player#clearPlayerListHeaderAndFooter()}.
    */
   @Deprecated
-  void clearHeaderAndFooter();
+  default void clearHeaderAndFooter() {
+    clearPlayerListHeaderAndFooter();
+  }
+
+  /**
+   * Clears the player list header and footer.
+   */
+  void clearPlayerListHeaderAndFooter();
 
   /**
    * Returns the player's player list header.
@@ -180,7 +192,7 @@ public interface Player extends
    *
    * @param reason component with the reason
    */
-  void disconnect(net.kyori.adventure.text.Component reason);
+  void disconnect(Component reason);
 
   /**
    * Sends chat input onto the players current server as if they typed it into the client chat box.
@@ -227,9 +239,15 @@ public interface Player extends
    * Gets the {@link ResourcePackInfo} of the currently applied
    * resource-pack or null if none.
    *
+   * <p> Note that since 1.20.3 it is no longer recommended to use
+   * this method as it will only return the last applied
+   * resource pack. To get all applied resource packs, use
+   * {@link #getAppliedResourcePacks()} instead. </p>
+   *
    * @return the applied resource pack or null if none.
    */
   @Nullable
+  @Deprecated
   ResourcePackInfo getAppliedResourcePack();
 
   /**
@@ -237,22 +255,71 @@ public interface Player extends
    * the user is currently downloading or is currently
    * prompted to install or null if none.
    *
+   * <p> Note that since 1.20.3 it is no longer recommended to use
+   * this method as it will only return the last pending
+   * resource pack. To get all pending resource packs, use
+   * {@link #getPendingResourcePacks()} instead. </p>
+   *
    * @return the pending resource pack or null if none
    */
   @Nullable
+  @Deprecated
   ResourcePackInfo getPendingResourcePack();
 
   /**
-   * <strong>Note that this method does not send a plugin message to the server the player
+   * Gets the {@link ResourcePackInfo} of the currently applied
+   * resource-packs.
+   *
+   * @return collection of the applied resource packs.
+   */
+  @NotNull Collection<ResourcePackInfo> getAppliedResourcePacks();
+
+  /**
+   * Gets the {@link ResourcePackInfo} of the resource packs
+   * the user is currently downloading or is currently
+   * prompted to install.
+   *
+   * @return collection of the pending resource packs
+   */
+  @NotNull Collection<ResourcePackInfo> getPendingResourcePacks();
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p><strong>Note that this method does not send a plugin message to the server the player
    * is connected to.</strong> You should only use this method if you are trying to communicate
-   * with a mod that is installed on the player's client. To send a plugin message to the server
+   * with a mod that is installed on the player's client.</p>
+   *
+   * <p>To send a plugin message to the server
    * from the player, you should use the equivalent method on the instance returned by
    * {@link #getCurrentServer()}.
    *
-   * @inheritDoc
+   * <pre>
+   *    final ChannelIdentifier identifier;
+   *    final Player player;
+   *    player.getCurrentServer()
+   *          .map(ServerConnection::getServer)
+   *          .ifPresent((RegisteredServer server) -> {
+   *            server.sendPluginMessage(identifier, data);
+   *          });
+   *  </pre>
+   *
    */
   @Override
-  boolean sendPluginMessage(ChannelIdentifier identifier, byte[] data);
+  boolean sendPluginMessage(@NotNull ChannelIdentifier identifier, byte @NotNull [] data);
+
+  /**
+   * {@inheritDoc}
+   * <p><strong>Note that this method does not send a plugin message to the server the player
+   * is connected to.</strong> You should only use this method if you are trying to communicate
+   * with a mod that is installed on the player's client.</p>
+   *
+   * <p>To send a plugin message to the server
+   * from the player, you should use the equivalent method on the instance returned by
+   * {@link #getCurrentServer()}.
+   */
+  @Override
+  boolean sendPluginMessage(@NotNull ChannelIdentifier identifier, @NotNull PluginMessageEncoder dataEncoder);
 
   @Override
   default @NotNull Key key() {
@@ -262,7 +329,7 @@ public interface Player extends
   @Override
   default @NotNull HoverEvent<HoverEvent.ShowEntity> asHoverEvent(
           @NotNull UnaryOperator<HoverEvent.ShowEntity> op) {
-    return HoverEvent.showEntity(op.apply(HoverEvent.ShowEntity.of(this, getUniqueId(),
+    return HoverEvent.showEntity(op.apply(HoverEvent.ShowEntity.showEntity(this, getUniqueId(),
             Component.text(getUsername()))));
   }
 
@@ -273,4 +340,100 @@ public interface Player extends
    * @return the player's client brand
    */
   @Nullable String getClientBrand();
+
+  //
+  // Custom Chat Completions API
+  //
+
+  /**
+   * Add custom chat completion suggestions shown to the player while typing a message.
+   *
+   * @param completions the completions to send
+   */
+  void addCustomChatCompletions(@NotNull Collection<String> completions);
+
+  /**
+   * Remove custom chat completion suggestions shown to the player while typing a message.
+   *
+   * <p>Online player names can't be removed with this method, it will only affect
+   * custom completions added by {@link #addCustomChatCompletions(Collection)}
+   * or {@link #setCustomChatCompletions(Collection)}.
+   *
+   * @param completions the completions to remove
+   */
+  void removeCustomChatCompletions(@NotNull Collection<String> completions);
+
+  /**
+   * Set the list of chat completion suggestions shown to the player while typing a message.
+   *
+   * <p>If completions were set previously, this method will remove them all
+   * and replace them with the provided completions.
+   *
+   * @param completions the completions to set
+   */
+  void setCustomChatCompletions(@NotNull Collection<String> completions);
+
+  //
+  // Non Supported Adventure Operations
+  // TODO: Service API
+  //
+
+  /**
+   * {@inheritDoc}
+   *
+   * <b>This method is not currently implemented in Velocity
+   * and will not perform any actions.</b>
+   */
+  @Override
+  default void playSound(@NotNull Sound sound) {
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <b>This method is not currently implemented in Velocity
+   * and will not perform any actions.</b>
+   */
+  @Override
+  default void playSound(@NotNull Sound sound, double x, double y, double z) {
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <b>This method is not currently implemented in Velocity
+   * and will not perform any actions.</b>
+   */
+  @Override
+  default void playSound(@NotNull Sound sound, Sound.Emitter emitter) {
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <b>This method is not currently implemented in Velocity
+   * and will not perform any actions.</b>
+   */
+  @Override
+  default void stopSound(@NotNull SoundStop stop) {
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <b>This method is not currently implemented in Velocity
+   * and will not perform any actions.</b>
+   */
+  @Override
+  default void openBook(@NotNull Book book) {
+  }
+
+  /**
+   * Transfers a Player to a host.
+   *
+   * @param address the host address
+   * @throws IllegalArgumentException if the player is from a version lower than 1.20.5
+   * @since 3.3.0
+   */
+  void transferToHost(@NotNull InetSocketAddress address);
 }

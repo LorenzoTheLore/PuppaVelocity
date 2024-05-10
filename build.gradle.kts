@@ -7,13 +7,13 @@ plugins {
 
 subprojects {
     apply<JavaLibraryPlugin>()
-
-    apply<VelocityCheckstylePlugin>()
-    apply<VelocityPublishPlugin>()
+    apply(plugin = "velocity-checkstyle")
+    //apply<VelocityCheckstylePlugin>()
+    //apply<VelocityPublishPlugin>()
 
     java {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(11))
+            languageVersion.set(JavaLanguageVersion.of(17))
         }
     }
 
