@@ -17,7 +17,11 @@
 
 package com.velocitypowered.proxy.connection.client;
 
+import com.velocitypowered.api.event.player.CookieReceiveEvent;
 import com.velocitypowered.api.event.player.PlayerClientBrandEvent;
+import com.velocitypowered.api.event.player.configuration.PlayerConfigurationEvent;
+import com.velocitypowered.api.event.player.configuration.PlayerFinishConfigurationEvent;
+import com.velocitypowered.api.event.player.configuration.PlayerFinishedConfigurationEvent;
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
@@ -32,6 +36,7 @@ import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PingIdentifyPacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import com.velocitypowered.proxy.protocol.packet.ResourcePackResponsePacket;
+import com.velocitypowered.proxy.protocol.packet.ServerboundCookieResponsePacket;
 import com.velocitypowered.proxy.protocol.packet.config.FinishedUpdatePacket;
 import com.velocitypowered.proxy.protocol.packet.config.KnownPacksPacket;
 import com.velocitypowered.proxy.protocol.util.PluginMessageUtil;
@@ -39,12 +44,11 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 /**
  * Handles the client config stage.
@@ -56,6 +60,7 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
   private final ConnectedPlayer player;
   private String brandChannel = null;
 
+  private CompletableFuture<?> configurationFuture;
   private CompletableFuture<Void> configSwitchFuture;
 
   /**
@@ -75,12 +80,13 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
   }
 
   @Override
+  public void deactivated() {
+    configurationFuture = null;
+  }
+
+  @Override
   public boolean handle(final KeepAlivePacket packet) {
-    final VelocityServerConnection serverConnection = player.getConnectedServer();
-    if (!this.sendKeepAliveToBackend(serverConnection, packet)) {
-      final VelocityServerConnection connectionInFlight = player.getConnectionInFlight();
-      this.sendKeepAliveToBackend(connectionInFlight, packet);
-    }
+    player.forwardKeepAlive(packet);
     return true;
   }
 
@@ -101,8 +107,7 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(FinishedUpdatePacket packet) {
-    player.getConnection()
-        .setActiveSessionHandler(StateRegistry.PLAY, new ClientPlaySessionHandler(server, player));
+    player.getConnection().setActiveSessionHandler(StateRegistry.PLAY, new ClientPlaySessionHandler(server, player));
 
     configSwitchFuture.complete(null);
     return true;
@@ -128,15 +133,42 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
   public boolean handle(PingIdentifyPacket packet) {
     if (player.getConnectionInFlight() != null) {
       player.getConnectionInFlight().ensureConnected().write(packet);
+      return true;
     }
-    return true;
+
+    return false;
   }
 
   @Override
   public boolean handle(KnownPacksPacket packet) {
-    if (player.getConnectionInFlight() != null) {
-      player.getConnectionInFlight().ensureConnected().write(packet);
-    }
+    callConfigurationEvent().thenRun(() -> {
+      player.getConnectionInFlightOrConnectedServer().ensureConnected().write(packet);
+    }).exceptionally(ex -> {
+      logger.error("Error forwarding known packs response to backend:", ex);
+      return null;
+    });
+
+    return true;
+  }
+
+  @Override
+  public boolean handle(ServerboundCookieResponsePacket packet) {
+    server.getEventManager()
+        .fire(new CookieReceiveEvent(player, packet.getKey(), packet.getPayload()))
+        .thenAcceptAsync(event -> {
+          if (event.getResult().isAllowed()) {
+            final VelocityServerConnection serverConnection = player.getConnectionInFlight();
+            if (serverConnection != null) {
+              final Key resultedKey = event.getResult().getKey() == null
+                  ? event.getOriginalKey() : event.getResult().getKey();
+              final byte[] resultedData = event.getResult().getData() == null
+                  ? event.getOriginalData() : event.getResult().getData();
+
+              serverConnection.ensureConnected()
+                  .write(new ServerboundCookieResponsePacket(resultedKey, resultedData));
+            }
+          }
+        }, player.getConnection().eventLoop());
 
     return true;
   }
@@ -179,26 +211,25 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void exception(Throwable throwable) {
-    player.disconnect(
-        Component.translatable("velocity.error.player-connection-error", NamedTextColor.RED));
+    player.disconnect(Component.translatable("velocity.error.player-connection-error", NamedTextColor.RED));
   }
 
-  private boolean sendKeepAliveToBackend(
-          final @Nullable VelocityServerConnection serverConnection,
-          final @NotNull KeepAlivePacket packet
-  ) {
-    if (serverConnection != null) {
-      final Long sentTime = serverConnection.getPendingPings().remove(packet.getRandomId());
-      if (sentTime != null) {
-        final MinecraftConnection smc = serverConnection.getConnection();
-        if (smc != null) {
-          player.setPing(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sentTime));
-          smc.write(packet);
-          return true;
-        }
-      }
+  /**
+   * Calls the {@link PlayerConfigurationEvent}.
+   * For 1.20.5+ backends this is done when the client responds to
+   * the known packs request. The response is delayed until the event
+   * has been called.
+   * For 1.20.2-1.20.4 servers this is done when the client acknowledges
+   * the end of the configuration.
+   * This is handled differently because for 1.20.5+ servers can't keep
+   * their connection alive between states and older servers don't have
+   * the known packs transaction.
+   */
+  private CompletableFuture<?> callConfigurationEvent() {
+    if (configurationFuture != null) {
+      return configurationFuture;
     }
-    return false;
+    return configurationFuture = server.getEventManager().fire(new PlayerConfigurationEvent(player, player.getConnectionInFlightOrConnectedServer()));
   }
 
   /**
@@ -218,13 +249,17 @@ public class ClientConfigSessionHandler implements MinecraftSessionHandler {
       smc.write(brandPacket);
     }
 
-    player.getConnection().eventLoop().execute(() -> {
+    callConfigurationEvent().thenCompose(v -> {
+      return server.getEventManager().fire(new PlayerFinishConfigurationEvent(player, serverConn))
+          .completeOnTimeout(null, 5, TimeUnit.SECONDS);
+    }).thenRunAsync(() -> {
       player.getConnection().write(FinishedUpdatePacket.INSTANCE);
       player.getConnection().getChannel().pipeline().get(MinecraftEncoder.class).setState(StateRegistry.PLAY);
+      server.getEventManager().fireAndForget(new PlayerFinishedConfigurationEvent(player, serverConn));
+    }, player.getConnection().eventLoop()).exceptionally(ex -> {
+      logger.error("Error finishing configuration state:", ex);
+      return null;
     });
-
-    smc.write(FinishedUpdatePacket.INSTANCE);
-    smc.getChannel().pipeline().get(MinecraftEncoder.class).setState(StateRegistry.PLAY);
 
     return configSwitchFuture;
   }
